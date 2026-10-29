@@ -1,0 +1,14 @@
+{
+  "name": "rr-dispatcher",
+  "owner": {
+    "name": "roylam-beep"
+  },
+  "description": "roylam-beep 的派工 marketplace：rr-dispatcher。",
+  "plugins": [
+    {
+      "name": "rr-dispatcher",
+      "source": "./",
+      "description": "照 docs/changes 工單派工：Cursor／Claude 執行者、PR body、合併前閘、工單格式檢查。獨立 plugin，不依賴其他 plugin。"
+    }
+  ]
+}

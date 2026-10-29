@@ -1,0 +1,15 @@
+{
+  "name": "rr-dispatcher",
+  "version": "0.2.0",
+  "description": "照 docs/changes 工單派工：Cursor／Claude 執行者、PR body、合併前閘、工單格式檢查。獨立 plugin，不依賴其他 plugin。",
+  "author": {
+    "name": "roylam-beep"
+  },
+  "license": "MIT",
+  "keywords": [
+    "dispatch",
+    "cursor",
+    "pull-request"
+  ],
+  "commands": "./commands"
+}

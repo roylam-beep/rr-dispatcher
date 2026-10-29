@@ -1,0 +1,166 @@
+---
+description: 照 docs/changes/<slug>/tasks.md 派工——算目前波次、替每條未勾 task 套契約 prompt、使用者下指令就是同意、不再問、每條經執行者原語開一個（gate.env 的 EXECUTOR：cursor＝/rr-dispatcher:cc-cursor，claude＝/rr-dispatcher:cc-claude，沒寫就看有沒有 Cursor 工具）、記進 runs.md；PR 回來後跑閘＋獨立驗收，過了才合進整合分支，一波全合就自動派下一波，全勾後合進預設分支前才問。`from-plan <計畫檔>` ＝先把 plan mode 計畫檔起草成工單再派。`sync` ＝用 gh 對帳已合併 PR 並打勾（gh 不能用就走 GitHub MCP）。驗收員預設 Opus（gate.env 的 REVIEWER_MODEL 可換）。自己不碰任何 cursor_* 工具。EN: dispatch tasks, run the work order, fan out PRs
+argument-hint: "<slug> [sync | from-plan <計畫檔路徑>]"
+allowed-tools: Bash(gh pr list:*), Bash(gh pr view:*), Bash(git remote:*), Bash(git status:*), Bash(git log:*), Bash(git fetch:*), Bash(git add:*), Bash(git commit:*), Bash(git push:*), Bash(git pull:*), Bash(git switch:*), Bash(gh pr create:*), Bash(gh pr checks:*), Bash(gh pr merge:*), Bash(sh:*), Bash(uuidgen:*), Bash(cp:*), Bash(mkdir:*), Bash(python3:*), Bash(sed:*), Bash(ls:*), Bash(grep:*), Bash(git ls-remote:*), Bash(gh auth status:*), Bash(gh pr ready:*), Read, Write, Edit, Skill, Agent, ToolSearch, mcp__claude-code-remote__send_later, mcp__github__create_pull_request, mcp__github__list_pull_requests, mcp__github__search_pull_requests, mcp__github__pull_request_read, mcp__github__update_pull_request, mcp__github__merge_pull_request
+---
+
+照工單派工。$ARGUMENTS
+
+只作用於當前 repo。`docs/changes/<slug>/tasks.md` 不存在就停（`from-plan` 除外），回報「沒有這份工單；有計畫檔就
+`/rr-dispatcher:cc-dispatch <slug> from-plan <路徑>`」（plan mode 的計畫檔在 `~/.claude/plans/`）。
+`docs/changes/README.md` 不存在就從 `${CLAUDE_PLUGIN_ROOT}/templates/changes-README.md` 複製一份，
+它是契約 prompt 的必讀檔，cloud agent 只讀得到 remote 上的檔，跟工單一起寫進 BASE。
+派任何一波之前先跑 `python3 "${CLAUDE_PLUGIN_ROOT}/tools/check_change.py" .`，紅就先改工單到綠（工單格式檢查只在這裡跑，不進 repo、不掛 pre-commit）。
+**派執行者的每一步都經原語**：`gate.env` 的 `EXECUTOR` 是 `cursor` → `/rr-dispatcher:cc-cursor`；`claude` → `/rr-dispatcher:cc-claude`；
+沒寫 → `ToolSearch` 找得到 `cursor_create_agent`（cursor-cloud MCP）就 `/rr-dispatcher:cc-cursor`，找不到就 `/rr-dispatcher:cc-claude`，回報點名用了哪個。
+`EXECUTOR_MODEL` 有寫就以 `--model` 帶給原語，沒寫不帶（Cursor 用其預設、Claude 用 Sonnet）。本 skill 不直接呼叫 `cursor_*`。
+下文「agent」泛指執行者，「追問同一個 agent」＝`/rr-dispatcher:cc-cursor <bc-id> <追問>` 或 `/rr-dispatcher:cc-claude agent:<handle> <追問>`。
+`/rr-dispatcher:cc-claude` 回「執行者已不在」（sub-agent 跟舊 session 沒了）→ 照派工第 4 步在同一個 `exec/<slug>-N.M` 開新執行者（前言會讓它接著做），
+prompt 末尾附上這次追問內容，`runs.md` 該列換成新 id；這不算重派、不另開 PR。
+`MAIN`＝repo 預設分支：`git symbolic-ref --short refs/remotes/origin/HEAD` 去掉 `origin/`，取不到用 `main`；下文的 `MAIN` 都指它。
+`BASE`＝`docs/changes/<slug>/gate.env` 的 `BASE=`，沒有這檔或這行就用 `MAIN`。
+**分支前綴**讀同一份 `gate.env`，沒寫用預設：`INTEGRATION_PREFIX`（整合分支，預設 `claude/`）、`EXEC_PREFIX`（執行者分支，預設 `exec/`）、
+`DISPATCH_PREFIX`（寫進 `MAIN` 用的暫時分支，預設 `dispatch/`）。下文 `claude/`、`exec/`、`dispatch/` 都指這三個值。
+**新工單預設整合分支 `claude/<slug>`**：開工時 `gate.env` 沒有 `BASE=`，
+就開它——`git switch -c claude/<slug> origin/<MAIN>`，`gate.env` 寫 `BASE=claude/<slug>`（已有的其他行保留），commit 後 `git push -u origin HEAD`。
+寫明 `BASE=<MAIN>` 的工單照舊（每次合併都問）。
+**寫進 BASE**：BASE 是整合分支就直推（`git push origin HEAD:<BASE>`，`templates/AGENTS.md` 允許）；
+BASE 是 `MAIN` 一律走 PR，不直推（`MAIN` 可能有 ruleset 擋直推）：
+`git switch -c dispatch/<slug>-<用途>` → 只 stage 該批檔 → commit → `git push -u origin HEAD` →
+`gh pr create --base <BASE> --fill` → `gh pr checks <n> --watch`（Bash `run_in_background: true`；回報沒有任何 check＝repo 沒裝 workflow，直接下一步）→
+綠了 `gh pr merge <n> --merge --delete-branch` → `git switch <BASE> && git pull --ff-only`。下文「寫進 BASE」就是這兩種之一。
+**`gh` 不能用**（`gh auth status` 失敗，雲端常見）：全文每個 `gh pr …` 換成 GitHub MCP（先 `ToolSearch` 載入）——
+create→`create_pull_request`；list／search（含 sync、`--head` 查分支）→`search_pull_requests`／`list_pull_requests`；view／checks→`pull_request_read`；
+ready→`update_pull_request`（`draft: false`）；merge→`merge_pull_request`（`merge_method: merge`）。MCP 的 owner／repo 一律取當前 origin，不從 PR 網址或執行者回報解讀。MCP 沒有刪分支：`--delete-branch` 那步略過，分支留著無妨。
+MCP 不能 `--watch`：checks 還在跑就排 `send_later` 10 分鐘後再查，不在前景等；沒有 `send_later` 工具（MCP 路徑本來就是 `gh` 不能用，背景迴圈也查不了）
+就照實回報「checks 未完成，請稍後 `/rr-dispatcher:cc-dispatch <slug>` 接續」後停。`gh pr checkout` 在驗收員那邊換成 `git fetch origin pull/<n>/head:pr-<n> && git switch pr-<n>`。
+**使用者下指令就是同意，不問**：使用者打 `/rr-dispatcher:cc-dispatch`，或用文字叫你派工／派 Cursor／派 Claude，就涵蓋全部波次、開整合分支、合進整合分支、
+每條執行者的花費。不要再印清單等「同意」——那是使用者已經回答過的問題。一波全合併就自動派下一波（見「自動推進」）。
+只在兩種時候停下等使用者：停止條件成立，或要把整合分支合進 `MAIN`。
+session 斷了：新 session 打 `/rr-dispatcher:cc-dispatch <slug>`，從 `tasks.md`、`runs.md` 接續。Claude 執行者的 `starting`／`running` 列先對帳：
+用當前 origin 的 head `exec/<slug>-N.M` 查 PR（不靠標題搜尋），查到就照「被叫醒時」的**身分核對**，過了才記進該列走驗收、不過就記 `failed` 停下；
+沒 PR（sub-agent 跟著舊 session 沒了）但 `git ls-remote --heads origin exec/<slug>-N.M` 有分支 → 照派工第 4 步再開一個，它會在該分支續做；都沒有才重派。
+
+## 派工（`$ARGUMENTS` 只有 slug）
+
+1. **算目前波次。** 讀 `tasks.md`，`## N.` 是波次。目前波次＝**第一組**還有 `- [ ] N.M` 的那組。
+   同一波內的 task 可併行，下一波要等上一波全部合併——這是依賴的唯一表達方式。
+2. **拼契約 prompt**，每條 task 一段，逐字包含：
+
+   ```
+   你在 <owner/repo>（分支從 <BASE> 開，PR 目標也是 <BASE>）。先讀：docs/changes/README.md、
+   docs/changes/<slug>/spec.md、docs/changes/<slug>/tasks.md。
+   只做這一條：<tasks.md 那一行原文>
+   規矩：測試與實作同一個 PR；開 PR 前跑「驗：」後面那句，輸出貼進 PR body 的 ## 驗；
+   不改 tasks.md；spec 既有條文寫錯可在本 PR 修正，PR body 的 ## spec 改動 寫原因；不准新增 Requirement／Scenario／MUST；
+   介面決定（參數範圍、檔案格式、資料放哪）寫在程式註解或 PR body 的 ## 介面決定；
+   不碰 spec.md「## 不做」列的東西。不准用 skip 表達依賴還沒到；依賴沒到就在 PR body 寫明「工單切錯」。
+   被追問時只修列出的 BLOCKER，不順手補同類洞。
+   該 task 有列「所有權：」就只改那些檔（外加 docs/changes/<slug>/spec.md，只限修正既有條文）。開 PR 前、以及每次被追問之後，先 `git merge origin/<BASE>` 再推。
+   PR 標題逐字（反引號內那段，不帶句號）：`<slug> N.M: <一句>`。PR body 可選 ## 學到的（一行一條，別人會再踩的坑）。
+   ```
+3. **不問，直接派。** 同時最多 `MAX_CONCURRENT` 個執行者（Cursor 與 Claude 合計）：讀 `gate.env` 的 `MAX_CONCURRENT=`，沒寫＝**8**。
+   只讀 `gate.env`，不讀 `docs/changes/README.md`——老 repo 的範本複本寫的 `MAX_CONCURRENT=3`／`MAX_CONCURRENT_CLAUDE=` 一律忽略。
+   派完那則回報一行列出全部波次、repo、BASE、執行者，讓使用者看得到要跑什麼——是告知，不是請示。
+4. **逐條派。** 先對照 `runs.md`，**先寫進 `runs.md` 再開**（檔在 `docs/changes/<slug>/`，不存在就建，表頭如下）。超過上限的先記 `queued`。
+   - Cursor：已有 `runId` 的 task 不再派（重派＝多開一個 agent）；有 `agentId` 沒 `runId` 的用那個 id 重跑。
+     新的每條先 `uuidgen`（沒有就 `python3 -c 'import uuid;print(uuid.uuid4())'`）生 `bc-<小寫 uuid>` 寫進 `agentId`，再呼叫 `/rr-dispatcher:cc-cursor --base <BASE> --name "<slug> N.M" --agent-id <id> [--model <EXECUTOR_MODEL>] <契約 prompt>`（Skill 工具），
+     它回報後把 runId 填進該列。
+   - Claude：沒有冪等鍵。已有執行者 id 的列不再派。新的每條先寫一列 `starting`、`agentId` 空、`runId` 寫 `-`，再呼叫
+     `/rr-dispatcher:cc-claude --base <BASE> --name "<slug> N.M" --branch exec/<slug>-N.M [--model <EXECUTOR_MODEL>] <契約 prompt>`（Skill 工具），
+     它回報後把它給的執行者 id（`agent:…`）填進 `agentId`、狀態改 `running`。
+5. **結束這一輪。** 回報（不重貼 prompt）：派了幾條、排隊幾條、哪幾條因 `runs.md` 已有 runId 跳過、`runs.md` 路徑。
+
+### runs.md 表頭
+
+```
+| task | agentId | runId | 狀態 | PR | 備註 |
+|---|---|---|---|---|---|
+```
+
+`agentId`＝執行者 id（Cursor `bc-…`、Claude `agent:…`）。狀態值：`starting`／`running`／`queued`／`finished`／`failed`／`stalled`／`merged`／`closed`／`reverted`。
+
+## from-plan（`$ARGUMENTS` 第二個字是 `from-plan`，第三個是計畫檔路徑）
+
+1. `docs/changes/<slug>/` 裡已有 `spec.md` 或 `tasks.md` → 停，回報「工單已存在，直接 `/rr-dispatcher:cc-dispatch <slug>`」，不寫任何檔（只有 `gate.env` 不算，那是使用者先放的設定）。
+2. 讀計畫檔，照 `docs/changes/README.md` 的格式起草兩個檔，**只轉寫計畫裡有的東西，不自己加需求**：
+   - `spec.md`：`## Purpose` 取計畫的「為什麼」；`## 不做` 取計畫明說不碰的（沒寫就只列「計畫以外的一切」）；
+     計畫的每個可觀察結果寫成 `### Requirement:`，本文每個可觀察子句都要對到一條 Scenario（README「spec.md」節）。
+   - `tasks.md`：一個 PR 能獨立變綠的量切一條 task；要讀別條 task 產出的檔就放後一波，同波所有權不交集。「驗：」取計畫裡的驗證方式，
+     計畫沒寫就用 repo 的測試指令，都沒有就寫「驗：[需確認]」並在第 4 步點名。「驗：」讓不出反例變紅的（只驗格式、UI 不開瀏覽器）
+     在第 4 步回報標 `[驗法弱]`——告知，不停。
+   - 每條 task 用 `git log --oneline -30` 對照；找得到對應 commit 的寫 `- [x]`，第 4 步點名該 hash。
+   - `gate.env`：`BASE=claude/<slug>`、`GATE_1=` 取 repo 的測試指令（`gate.env` 已存在就只補缺的行，使用者先寫好的前綴、模型等設定保留）。
+3. 跑 `python3 "${CLAUDE_PLUGIN_ROOT}/tools/check_change.py" .`，紅就改到綠。
+4. **不問，直接寫進去**：照開頭「新工單預設整合分支」開 `claude/<slug>`，把兩個工單檔、`gate.env`（加上開頭補的 README）commit 直推，
+   接著從派工第 1 步跑——cloud agent 只讀得到 remote 上的。`git status -sb` 若顯示本機領先 remote，在回報裡點名
+   （整合分支從 `origin/<MAIN>` 開，本機沒推的 commit 它看不到）。各波 task 裡標成 `[x]` 的，回報點名對應 commit。
+   全部 task 都是 `[x]` → 不派，回報「計畫已做完，工單只留作紀錄」。
+   回報：工單路徑、合進 BASE 的 PR、`check_change.py` 綠，再接派工那句。
+
+## 被叫醒時
+
+cc-cursor／cc-claude 回報那一行後、以及接手時找到的 PR：一律先**核對身分**再補進 `runs.md`——`gh pr view` 或 MCP `pull_request_read`（owner／repo 固定取 `git remote get-url origin`，
+不從網址解讀），標題符合 `^<slug> N.M:`、base 等於 BASE；任一不對就不驗收、不合併，
+該列記 `failed`、備註「PR 身分不符」，照停止條件停下回報。對了才把該列 `狀態` 與 `PR` 補上；`runs.md` 還有 `queued` 就再派一條（同樣經該原語，不再問）。
+`failed`／`blocked`／`stalled` 不自動重派，回報 `said:` 那句給使用者決定。有 PR 就接著驗收。
+
+## 被叫醒時：驗收
+
+發包者**不寫產品程式碼**，一行也走追問；只寫 `docs/changes/<slug>/**`、`handovers/**`、`BACKLOG.md`。
+1. `sh "${CLAUDE_PLUGIN_ROOT}/tools/gate.sh" docs/changes/<slug> <PR#>`（沒有 `gate.env` 就先照 README 建；一律用 Bash `run_in_background: true` 跑，結束會叫醒）。
+   退出碼 1 → 把紅的那幾條原樣追問同一個 agent；2 → 停，回報環境錯；3 → 追問同一個 agent「先 merge origin/<BASE>」。
+2. 閘綠 → 用 Agent 工具派 **1 位**對抗型驗收員，帶 `model: "<REVIEWER_MODEL>"`（`gate.env` 的 `REVIEWER_MODEL=`，沒寫＝`opus`；不論執行者是誰），限時 45 分鐘。prompt 要寫明：
+   - **自己 clone**：`git clone <repo url> <scratchpad>/review-<n>-r<k>` → `gh pr checkout <n>`（不用 `isolation: "worktree"`——發包者 cwd 常不在工單 repo），
+     再在本機暫存分支 `git merge origin/<BASE>`，**在合進 BASE 後的狀態**核對。
+   - **核對對象**：本 PR task「規格：」所指 Requirement 的**本文每個子句**＋其 Scenario（task 沒寫「規格：」就取對應的那條）、PR diff、所有權；
+     重跑測試只記 skip 數，不比對 `## 驗` 的數字——閘綠就是證據。
+     mutation（故意改壞實作，看測試會不會紅，改完還原）只對本 PR 的負向 Scenario 做；前幾輪已紅、該處程式沒改的不重跑。
+   - **BLOCKER 只有三種**：(a) 上面列的子句或 Scenario 在合進 BASE 後不成立，且反例是本 repo 工具會產生、或外部呼叫者觸發得了的——
+     不找清單外的路，「任何輸入都成立」這類全稱性質不當 BLOCKER；(b) 改了所有權外的檔（本 change 的 `spec.md` 修正既有條文不算）；
+     (c) 重跑 skip>0，或 mutation 顯示某條 Scenario 的反例測不到。其餘一律寫進 `## 非阻擋`，不擋合併。
+   - **不會卡死**：第一步先寫出檔頭 `VERDICT: pending`，之後邊查邊追加；不開互動式瀏覽器（畫面靠 `gate.env` 的瀏覽器冒煙）。
+   全文寫主 checkout 的 `docs/changes/<slug>/reviews/PR-<n>-r<k>.md`（給絕對路徑），最後把檔頭改成兩行
+   `VERDICT: merge|fix-needed`、`BLOCKERS: <條列或「無」>`。發包者只讀這兩行，不讀全文、不自己複驗。
+3. `fix-needed` → 把 BLOCKERS 追問同一個 agent，並要它先 merge origin/<BASE>、只修列出的 BLOCKER；回來從第 1 步重跑，k+1。
+   同一類 BLOCKER 連兩輪出現 → 先停下來找共同原因（常是工單或「驗：」寫錯），回報使用者，不直接轉貼下一條。
+   第 3 輪還不過就停，回報給使用者，**不准自己修**。驗收員卡住或逾時就重派一次，再卡住就回報。
+4. `merge` → 本機要在 BASE 上。驗收後 BASE 若已合進別的 PR，先重跑第 1 步的閘（同波併發時常見）；PR 是 draft（Cursor 常開成 draft）就先 `gh pr ready <n>`。
+   `gh pr checks <n> --watch --required`（背景跑；沒有任何 check＝沒裝 workflow，直接下一步）綠了才
+   `gh pr merge <n> --merge`、`git pull --ff-only`，合併前看 PR 的**實際 base**（不是 `gate.env` 的 BASE）：是 `MAIN` 就先問使用者當輪確認，跟 BASE 不同就停。`runs.md` 該列記 `merged`。
+   記帳：BASE 是整合分支就每合一條把 `docs/changes/<slug>/`（runs.md、reviews/）commit 直推；BASE 是 `MAIN` 就等這波全部合併後經 PR。
+   其他檔有改動就停（不 stash）。這波全部 `merged` → 走「自動推進」。
+
+## 自動推進（一波全部 `merged` 之後）
+
+1. 替這波打勾：用剛合併的那幾個 PR 的標題（`gh pr view <n> --json title`）對 `N.M`，**不要靠 `gh pr list --search`**
+   （GitHub 搜尋索引有延遲，剛合併的會漏）；`tasks.md` 連同記帳寫進 BASE。
+2. 還有未勾的波次 → 回派工第 1 步派下一波，**不再問**（使用者的派工指令涵蓋）。
+3. 全部勾完、BASE 是整合分支 → 在 BASE 上先歸檔：`mkdir -p docs/archive/changes && git mv docs/changes/<slug> docs/archive/changes/<YYYY-MM-DD>-<slug>`，commit 直推；
+   再呼叫 `/rr-dispatcher:cc-pr <MAIN> --spec docs/archive/changes/<YYYY-MM-DD>-<slug>/spec.md`（Skill 工具），它回 body 檔路徑 →
+   `gh pr create --base <MAIN> --head <BASE> --title "<slug>: 整合進 <MAIN>" --body-file <該路徑>`（MCP 就把檔案內容當 `body`）→
+   `gh pr checks <n> --watch`（背景跑）綠了 → **問使用者一次**：PR 網址、波數、合併 PR 數、退回次數。同意才 `gh pr merge <n> --merge`（歸檔隨這個 PR 一起進 `<MAIN>`）。
+
+**停止條件**（任一成立就停下回報、不派新 agent；已在跑的照常跑完驗收）：某 PR 第 3 輪驗收仍 `fix-needed`；
+執行者 `failed`／`blocked`／`stalled`；驗收員卡住兩次；`gate.sh` 退出碼 2；執行者或驗收員回報要追加 task、改所有權或動 `## 不做`；
+下一波有 task 的「驗：」是 `[需確認]`。
+
+## sync（`$ARGUMENTS` 第二個字是 `sync`）
+
+1. **收集事件。** `runs.md` 有 PR 號的 task：`gh pr view <n> --json title,state,mergedAt` 判完成
+   （不靠搜尋——GitHub 搜尋索引有延遲，剛合併的會漏）。沒有列的 task 與撤回才用搜尋：
+   `gh pr list --state merged --search "<slug> " --limit 200 --json title,url,mergedAt`，
+   標題符合 `^<slug> (\d+\.\d+):` ＝完成、符合 `^Revert "<slug> (\d+\.\d+):` ＝撤回（GitHub Revert 按鈕的標題），時間取 `mergedAt`。
+   再 `git fetch origin <BASE>` 後 `git log origin/<BASE> --format='%cI %s' --grep='^Revert "'`，subject 符合同一個撤回樣式的也算撤回。
+   subject 不含 `<slug> N.M:` 的 revert 抓不到（單 commit 的 squash 用 commit 訊息當標題）——不猜，這是已知盲點。
+2. **每條 N.M 取時間最晚的事件**，只動那一行（`sed` 精準比對）：完成 → `- [ ] N.M ` 改 `- [x] N.M `、`runs.md` 該列 `merged`；
+   撤回 → `- [x] N.M ` 改回 `- [ ] N.M `、`runs.md` 該列 `reverted`。撤回後又有新的完成就照常打勾。
+3. `gh pr list --state closed --search "<slug> " --json title,url,mergedAt` 裡 `mergedAt` 為空的 → `runs.md` 記 `closed`，不動 `tasks.md`。
+4. 全部勾完就印歸檔那行（`git mv docs/changes/<slug> docs/archive/changes/<YYYY-MM-DD>-<slug>`）提醒下一步，不代跑。
+5. `gh` 不能用就照開頭換 GitHub MCP（`search_pull_requests` 帶 `<slug> ` 與 `is:merged`／`is:closed`）；MCP 也沒有才回報一行「無法對帳」，不猜。
+6. 回報：勾了哪幾條、改回未勾哪幾條（reverted）、幾條 closed。
+
+## 防什麼
+
+逐條手派時漏讀必讀檔、PR 標題對不上 `sync`、上一波沒合完就開下一波；
+驗收標準沒有終點（執行者自寫考題、驗收員找清單外的路）讓同一個 PR 退件不收斂。

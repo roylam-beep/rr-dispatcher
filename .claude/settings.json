@@ -1,0 +1,13 @@
+{
+  "enabledPlugins": {
+    "rr-dispatcher@rr-dispatcher": true
+  },
+  "extraKnownMarketplaces": {
+    "rr-dispatcher": {
+      "source": {
+        "source": "github",
+        "repo": "roylam-beep/rr-dispatcher"
+      }
+    }
+  }
+}
